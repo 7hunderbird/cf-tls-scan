@@ -1,0 +1,73 @@
+#!/bin/bash
+
+setup_repo () {
+
+    rm -rf src/*
+    pushd src
+    git clone https://github.com/cloudfoundry/cf-deployment.git
+    popd
+
+    REPO_CF=$PWD/src/cf-deployment
+
+}
+# setup_repo
+# # exit
+
+
+generate_manifest () {
+
+    # clear out the two files that are generated
+    # cf-deployment-vars.yml
+    # cf-manifest.yml
+    rm -f cf-*
+    
+    # Uses the 10.244.0.34 ip from cf-deployment bosh-lite.yml operator file
+    # https://github.com/cloudfoundry/cf-deployment/blob/master/operations/bosh-lite.yml
+
+    echo "This will take a minute... hang tight."
+    bosh -n interpolate $REPO_CF/cf-deployment.yml \
+        --vars-store cf-deployment-vars.yml \
+        -v "system_domain=sys.10.244.0.34.netip.cc" \
+        -o $REPO_CF/operations/bosh-lite.yml > cf-manifest.yml
+
+}
+# generate_manifest
+# exit
+
+releases_and_jobs() {
+    yq read cf-manifest.yml -j | jq '.instance_groups[].jobs[] | "\(.release) \(.name)"' | sort
+}
+# releases_and_jobs
+# exit
+
+get_release_source() {
+    urls=$(yq read cf-manifest.yml releases.[*].url | awk '{print $2}')
+    pushd src
+    for url in $urls
+    do
+        # produce a github url from a release url
+        #### https://storage.googleapis.com/cf-deployment-compiled-releases/bpm-1.1.6-ubuntu-xenial-621.5-20191206-030639-579539473.tgz
+        # release url: https://bosh.io/d/github.com/cloudfoundry/capi-release?v=1.89.0
+        #  github url: https://github.com/cloudfoundry/capi-release.git
+        
+        remove_prefix="https://bosh.io/d/"
+        remove_suffix="?v="
+        repo=${url#"$remove_prefix"}
+        repo=${repo%"$remove_suffix"*}
+        repo=$(echo "https://${repo}.git")
+        
+        # use bash substituion // to remove trailing .git
+        # use basename to get the base repo name: capi-release
+        
+        base_repo=$(basename "${repo//.git}")
+        if [ -d $base_repo ];
+        then echo "skipped $base_repo"
+        else
+            git clone $repo
+        fi
+        exit
+    done
+    popd src
+}
+get_release_source
+# exit

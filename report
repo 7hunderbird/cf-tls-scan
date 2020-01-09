@@ -1,52 +1,55 @@
 #!/bin/bash
 
-setup_repo () {
+# set -eux
 
-    rm -rf src/*
-    pushd src
-    git clone https://github.com/cloudfoundry/cf-deployment.git
-    popd
+export REPO_CF=$PWD/src/cf-deployment
+manifest_file=cf-manifest.yml
 
-    REPO_CF=$PWD/src/cf-deployment
-
+pushd () {
+    command pushd "$@" > /dev/null
 }
-# setup_repo
-# # exit
 
+popd () {
+    command popd "$@" > /dev/null
+}
+
+clone_cf () {
+    pushd src
+        base_repo=cf-deployment
+        if [ -d $base_repo ];
+        then 
+            echo "skipped cloning $base_repo"
+        else
+            git clone --depth=1 https://github.com/cloudfoundry/cf-deployment.git
+        fi
+    popd
+}
+# clone_cf
+# exit
 
 generate_manifest () {
+    if [ -f $manifest_file ];
+    then 
+        echo "skipped generating $manifest_file"
+    else
+        echo "We are going to create two files with 20k lines here... takes about 60-70 seconds."
 
-    # clear out the two files that are generated
-    # cf-deployment-vars.yml
-    # cf-manifest.yml
-    rm -f cf-*
-    
-    # Uses the 10.244.0.34 ip from cf-deployment bosh-lite.yml operator file
-    # https://github.com/cloudfoundry/cf-deployment/blob/master/operations/bosh-lite.yml
-
-    echo "This will take a minute... hang tight."
-    bosh -n interpolate $REPO_CF/cf-deployment.yml \
-        --vars-store cf-deployment-vars.yml \
-        -v "system_domain=sys.10.244.0.34.netip.cc" \
-        -o $REPO_CF/operations/bosh-lite.yml > cf-manifest.yml
-
+        bosh -n interpolate $REPO_CF/cf-deployment.yml \
+            --vars-store cf-deployment-vars.yml \
+            -v "system_domain=sys.10.244.0.34.netip.cc" \
+            -o $REPO_CF/operations/bosh-lite.yml > $manifest_file
+    fi
 }
 # generate_manifest
 # exit
 
-releases_and_jobs() {
-    yq read cf-manifest.yml -j | jq '.instance_groups[].jobs[] | "\(.release) \(.name)"' | sort
-}
-# releases_and_jobs
-# exit
-
-get_release_source() {
-    urls=$(yq read cf-manifest.yml releases.[*].url | awk '{print $2}')
+get_release_src() {
+    # from our generated manifest, gather the release urls
+    urls=$(yq read $manifest_file releases.[*].url | awk '{print $2}')
     pushd src
     for url in $urls
     do
         # produce a github url from a release url
-        #### https://storage.googleapis.com/cf-deployment-compiled-releases/bpm-1.1.6-ubuntu-xenial-621.5-20191206-030639-579539473.tgz
         # release url: https://bosh.io/d/github.com/cloudfoundry/capi-release?v=1.89.0
         #  github url: https://github.com/cloudfoundry/capi-release.git
         
@@ -60,14 +63,94 @@ get_release_source() {
         # use basename to get the base repo name: capi-release
         
         base_repo=$(basename "${repo//.git}")
-        if [ -d $base_repo ];
-        then echo "skipped $base_repo"
+        if [ -d $base_repo ]; # don't download if we have it
+        then 
+            echo "skipped $base_repo"
         else
-            git clone $repo
+            git clone --depth=1 --quiet $repo
         fi
-        exit
     done
     popd src
 }
-get_release_source
+# get_release_src
 # exit
+
+read() {
+    # set -eux
+    # $1 spec_file_path
+    # $2 provides or consumes
+    # yq read ./src/diego-release/jobs/file_server/spec provides
+    if [ $# -eq 0 ]
+    then
+        echo "Supply spec file and either provides/consumes."
+    elif [ $# -eq 2 ]
+    then
+        value=$(yq read $1 $2.[*].name)
+        if [ "$value" != null ]; then
+            yq p <(yq read $1 $2.[*].name) $2.name
+        fi
+    else
+        echo "Incorrect number of arguments.  Too little or too many."
+    fi
+}
+# read spec_file_path provides
+# exit
+
+echo_if_found() {
+    [ ! -z "$this_spec" ] && echo $spec && echo $this_spec
+}
+
+get_specs_for() {
+    if [ $# -eq 0 ]; then
+        echo "No arguments supplied to get_specs_for"
+    elif [ $# -eq 2 ]; then    
+        release_folders=$(find ./src -name "$1-release" -type d -depth 1)       # for the <given>-release folder
+        for release in $release_folders; do
+            jobs=$(find $release -name "jobs" -type d)                          # find the jobs directories
+            for job in $jobs; do
+                specs=$(find $job -name "spec")                                 # and each spec file there
+                for spec in $specs; do
+                    this_spec=$(read $spec $2)                                  # for each spec let's get providers and consumers
+                    echo_if_found
+                done
+            done
+        done    
+    else
+        echo "One ping only."
+    fi
+}
+# get_specs_for $1 $2
+# get_specs_for diego consumes
+# get_specs_for diego provides
+# exit
+
+get_release_names() {
+    if [ -f $manifest_file ];
+    then 
+        yq read $manifest_file -j | jq '.instance_groups[].jobs[] | "\(.release)"' | sort | uniq | tr -d '"' | grep -E -v -- '-buildpack'
+    else
+        echo "The $manifest_file does not exist. TODO Please run ... X"
+    fi    
+    
+}
+# releases=$(get_release_names)
+# echo $releases
+# exit
+
+all_links() {
+    releases=$(get_release_names)
+    for release in $releases; do
+        get_specs_for $release consumes
+        get_specs_for $release provides
+    done
+}
+all_links
+exit
+
+setup() {
+    clone_cf
+    generate_manifest
+    get_release_src
+}
+# setup
+# exit 
